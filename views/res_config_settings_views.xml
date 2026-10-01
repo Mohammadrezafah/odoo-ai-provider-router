@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.ai.provider.router</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="base_setup.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//app[@name='general_settings']" position="inside">
+                <block title="AI Provider Routing" name="ai_provider_router_settings" groups="base.group_system">
+                    <setting help="Route Ask AI chat to an OpenAI-compatible API. Messages, context, and tool definitions are sent to your selected provider and usage is billed by that provider. Odoo permissions and confirmations remain in effect. Embeddings, image generation, web search services, and transcription are not rerouted by this addon.">
+                        <field name="ai_router_enabled"/>
+                        <div class="content-group mt16" invisible="not ai_router_enabled">
+                            <div class="mt16">
+                                <label for="ai_router_base_url" class="col-3 col-lg-3 o_light_label"/>
+                                <field name="ai_router_base_url" class="oe_inline"/>
+                            </div>
+                            <div class="mt16">
+                                <label for="ai_router_model" class="col-3 col-lg-3 o_light_label"/>
+                                <field name="ai_router_model" class="oe_inline"/>
+                            </div>
+                            <div class="mt16">
+                                <label for="ai_router_api_key" class="col-3 col-lg-3 o_light_label"/>
+                                <field name="ai_router_api_key" class="oe_inline" password="True"/>
+                                <field name="ai_router_has_api_key" invisible="1"/>
+                                <span class="fa fa-check text-success ms-2" invisible="not ai_router_has_api_key" title="An API key is configured"/>
+                            </div>
+                            <div class="mt16" invisible="not ai_router_has_api_key">
+                                <field name="ai_router_clear_api_key"/>
+                                <label for="ai_router_clear_api_key" class="o_light_label"/>
+                            </div>
+                        </div>
+                    </setting>
+                </block>
+            </xpath>
+        </field>
+    </record>
+</odoo>
