@@ -1,5 +1,5 @@
 from odoo import api, fields, models
-from odoo.exceptions import AccessError, ValidationError
+from odoo.exceptions import AccessError, UserError, ValidationError
 
 from ..utils import provider as provider_utils
 
@@ -63,11 +63,22 @@ class ResConfigSettings(models.TransientModel):
 
         if provider_utils.KEY_UNSAFE_CHARS.search(new_key):
             raise ValidationError(self.env._("The API key must not contain line breaks."))
-        normalized_base_url = provider_utils.normalize_base_url(base_url) if base_url else ''
+        if base_url:
+            try:
+                normalized_base_url = provider_utils.normalize_base_url(base_url)
+            except UserError:
+                if enabled:
+                    raise
+                # Disabled routing must stay saveable; the URL is validated on enable.
+                normalized_base_url = base_url
+        else:
+            normalized_base_url = ''
         effective_key = new_key or ('' if clear_key else stored_key)
         if enabled:
             if not normalized_base_url:
-                raise ValidationError(self.env._("A valid provider base URL is required to enable AI provider routing."))
+                raise ValidationError(self.env._(
+                    "A valid provider base URL is required to enable AI provider routing."
+                ))
             if not model:
                 raise ValidationError(self.env._("A provider model is required to enable AI provider routing."))
             if not effective_key:
