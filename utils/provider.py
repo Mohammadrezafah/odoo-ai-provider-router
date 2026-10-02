@@ -9,6 +9,12 @@ PARAM_ENABLED = PARAM_PREFIX + 'enabled'
 PARAM_BASE_URL = PARAM_PREFIX + 'base_url'
 PARAM_MODEL = PARAM_PREFIX + 'model'
 PARAM_API_KEY = PARAM_PREFIX + 'api_key'
+PARAM_TIMEOUT_S = PARAM_PREFIX + 'timeout_s'
+
+DEFAULT_READ_TIMEOUT_S = 60
+CONNECT_TIMEOUT_S = 5
+MIN_READ_TIMEOUT_S = 5
+MAX_READ_TIMEOUT_S = 600
 
 DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1'
 CHAT_COMPLETIONS_SUFFIX = '/chat/completions'
@@ -16,7 +22,6 @@ LOOPBACK_HOSTS = {'127.0.0.1', '::1', 'localhost'}
 UNSAFE_URL_CHARS = re.compile(r'[\s\x00-\x1f\x7f]')
 KEY_UNSAFE_CHARS = re.compile(r'[\r\n]')
 METADATA_KEY = 'ai_provider_router'
-
 
 class ProviderError(Exception):
     def __init__(self, code):
@@ -40,12 +45,10 @@ def build_headers(router_config, session_ref=None):
         headers['x-opencode-session'] = f'odoo-ai-{session_ref or "default"}'
     return headers
 
-
 def _invalid_url():
     return UserError("The AI provider base URL is not valid. Use an HTTPS URL, "
                      "or HTTP only for 127.0.0.1, ::1 or localhost, without "
                      "credentials, query or fragment.")
-
 
 def normalize_base_url(base_url):
     if not isinstance(base_url, str):
@@ -77,10 +80,16 @@ def normalize_base_url(base_url):
         raise _invalid_url()
     return urlunsplit((parts.scheme, parts.netloc, path, '', ''))
 
-
 def chat_completions_url(base_url):
     return normalize_base_url(base_url) + CHAT_COMPLETIONS_SUFFIX
 
+def _read_timeout_s(icp):
+    raw = icp.get_str(PARAM_TIMEOUT_S, '')
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_READ_TIMEOUT_S
+    return max(MIN_READ_TIMEOUT_S, min(MAX_READ_TIMEOUT_S, value))
 
 def get_router_config(env):
     """Return a plain-scalar provider config dict when routing is enabled, else None."""
@@ -101,20 +110,32 @@ def get_router_config(env):
         'endpoint_url': normalized + CHAT_COMPLETIONS_SUFFIX,
         'model': model,
         'api_key': api_key,
+        'timeout': (CONNECT_TIMEOUT_S, _read_timeout_s(icp)),
     }
 
+def _invalid_part(part_type):
+    return UserError(
+        "AI provider routing received a malformed message part ('%s')." % (part_type or '?')
+    )
 
 def _serialize_text_parts(parts):
-    texts = [part['text'] for part in parts]
-    serialized = [
-        text if isinstance(text, str) else json.dumps(text, ensure_ascii=False)
-        for text in texts
-    ]
+    serialized = []
+    for part in parts:
+        text = part.get('text')
+        if text is None:
+            raise _invalid_part('text')
+        serialized.append(
+            text if isinstance(text, str) else json.dumps(text, ensure_ascii=False)
+        )
     return serialized[0] if len(serialized) == 1 else "\n".join(serialized)
 
-
 def _tool_result_content(result_parts):
-    text_parts = [part for part in result_parts if part['type'] == 'text']
+    if not isinstance(result_parts, list):
+        raise _invalid_part('tool_result')
+    text_parts = [
+        part for part in result_parts
+        if isinstance(part, dict) and part.get('type') == 'text' and part.get('text') is not None
+    ]
     if len(text_parts) != len(result_parts):
         return json.dumps(result_parts, ensure_ascii=False)
     return _serialize_text_parts(text_parts)
@@ -129,16 +150,21 @@ def _map_user_message(message):
             mapped.append({'role': 'user', 'content': _serialize_text_parts(text_buffer)})
             text_buffer.clear()
 
-    for part in message['content']:
-        part_type = part['type']
+    for part in message.get('content') or []:
+        part_type = part.get('type') if isinstance(part, dict) else None
         if part_type == 'text':
+            if part.get('text') is None:
+                raise _invalid_part('text')
             text_buffer.append(part)
         elif part_type == 'tool_result':
             flush_buffer()
+            tool_call_id = part.get('tool_call_id')
+            if not isinstance(tool_call_id, str) or not tool_call_id:
+                raise _invalid_part('tool_result')
             mapped.append({
                 'role': 'tool',
-                'tool_call_id': str(part['tool_call_id']),
-                'content': _tool_result_content(part['result']),
+                'tool_call_id': str(tool_call_id),
+                'content': _tool_result_content(part.get('result') or []),
             })
         elif part_type == 'inline_data':
             raise UserError("AI provider routing does not support inline data inputs.")
@@ -147,21 +173,31 @@ def _map_user_message(message):
     flush_buffer()
     return mapped
 
-
 def _map_assistant_message(message, provider_meta):
     text_parts = []
     tool_calls = []
-    for part in message['content']:
-        part_type = part['type']
+    for part in message.get('content') or []:
+        part_type = part.get('type') if isinstance(part, dict) else None
         if part_type == 'text':
+            if part.get('text') is None:
+                raise _invalid_part('text')
             text_parts.append(part)
         elif part_type == 'tool_call':
+            call_id = part.get('call_id')
+            name = part.get('name')
+            args = part.get('args')
+            if not isinstance(call_id, str) or not call_id:
+                raise _invalid_part('tool_call')
+            if not isinstance(name, str) or not name:
+                raise _invalid_part('tool_call')
+            if not isinstance(args, dict):
+                raise _invalid_part('tool_call')
             tool_calls.append({
-                'id': str(part['call_id']),
+                'id': str(call_id),
                 'type': 'function',
                 'function': {
-                    'name': part['name'],
-                    'arguments': json.dumps(part['args'], ensure_ascii=False),
+                    'name': name,
+                    'arguments': json.dumps(args, ensure_ascii=False),
                 },
             })
         elif part_type == 'inline_data':
@@ -182,7 +218,6 @@ def _map_assistant_message(message, provider_meta):
             if key in stored_meta:
                 mapped[key] = stored_meta[key]
     return mapped
-
 
 def build_request_body(*, model, provider_meta, messages, instructions, tools=None, options=None):
     options = options or {}
@@ -229,10 +264,8 @@ def build_request_body(*, model, provider_meta, messages, instructions, tools=No
         }
     return body
 
-
 def _fail(code):
     raise ProviderError(code)
-
 
 def parse_response(response_json, *, provider_meta, offered_tool_names=(), structured=False):
     if not isinstance(response_json, dict):
@@ -244,7 +277,7 @@ def parse_response(response_json, *, provider_meta, offered_tool_names=(), struc
         _fail('empty_choices')
     choice = choices[0]
     finish_reason = choice.get('finish_reason')
-    if finish_reason in ('length', 'content_filter'):
+    if finish_reason in ('length', 'max_tokens', 'content_filter'):
         _fail('finish_' + finish_reason)
     message = choice.get('message')
     if not isinstance(message, dict):
