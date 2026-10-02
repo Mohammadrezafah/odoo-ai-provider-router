@@ -35,9 +35,25 @@ without touching the core `ai` module, the Discuss UI, or `/mail/message/post`.
    | Enable AI Provider Routing | on |
    | Provider Base URL | `https://openrouter.ai/api/v1` (default) |
    | Provider Model | e.g. `openai/gpt-5-mini` |
-   | Provider API Key | your key (write-only, never shown again) |
+   | Provider API Key | your key (masked in the UI, see Security) |
 
 4. Chat as usual in **Discuss → AI → + Chat**.
+
+### Optional parameter
+
+| Parameter (`ir.config_parameter`) | Default | Meaning |
+|---|---|---|
+| `ai_provider_router.timeout_s` | `60` | Provider read timeout in seconds (clamped to 5–600). Connect timeout is fixed at 5s. |
+
+## Compatibility
+
+- Written against Odoo **20.0**; the test suite pins the private `ai.session`
+  request fields and the signed callback contract of the 20.0 release.
+  The override hooks into internal methods (`_save_and_submit_request`,
+  `_get_completions`) — re-run the test suite against each Odoo 20.x patch
+  release you upgrade to.
+- Uninstalling the module removes every stored parameter, including the
+  stored API key.
 
 ## Provider notes
 
@@ -62,13 +78,32 @@ without touching the core `ai` module, the Discuss UI, or `/mail/message/post`.
 
 ## Security
 
-- API key is stored in `ir.config_parameter`, write-only in Settings
-  (UI shows only "configured" status), admin-only, rejected if it contains
-  line breaks.
+- The API key is stored in `ir.config_parameter` (plaintext at rest, like any
+  Odoo database parameter). It is **masked in the Settings UI** (only a
+  "configured" status is shown, and the value never re-enters the form), but
+  system administrators can still read it via Settings → Technical →
+  Parameters or direct database access — treat DB access accordingly.
+- The key is rejected if it contains line breaks, is admin-only to manage,
+  and is deleted on uninstall.
 - No cookies, session tokens, or env proxies reach the provider
   (`trust_env=False`, no redirects).
 - Errors surfaced to users and logs are sanitized — never include keys,
   request bodies, or provider error payloads.
+
+## Testing
+
+- `tests/` contains an end-to-end suite (fake HTTP provider, HMAC callback
+  verification, tool confirmation flow, rollback behaviour) built on the
+  `ai` module's own test helpers. It requires **Odoo 20.0 Enterprise** with
+  the `ai` module:
+
+  ```bash
+  odoo-bin -d testdb -i ai_provider_router --test-tags /ai_provider_router --stop-after-init
+  ```
+
+- CI (`.github/workflows/ci.yml`) runs lint/syntax checks on every push; the
+  integration job runs on a self-hosted runner carrying Odoo 20 Enterprise
+  (triggered manually via `workflow_dispatch`).
 
 ## License
 

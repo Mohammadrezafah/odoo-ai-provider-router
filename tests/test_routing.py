@@ -475,7 +475,7 @@ class TestAIRouterHttp(TestAICallbackCommon):
         })
         _FakeProviderHandler.script.append({'content': 'ROUTER_OK', 'finish_reason': 'stop'})
         with self.mock_default_tools(self.tool_router_confirm):
-            ack = self._post_message(session, "AI_ROUTER_VERIFY: balas dengan ROUTER_OK.")
+            self._post_message(session, "AI_ROUTER_VERIFY: balas dengan ROUTER_OK.")
             self._wait_for(session, ('waiting_confirmation',))
             self.assertTrue(session.resume_token)
             self.assertIn('Do this?', session.pending_tool_call['user_input_request']['body'])
@@ -568,7 +568,9 @@ class TestAIRouterHttp(TestAICallbackCommon):
         self._post_message(session, "AI_ROUTER_VERIFY: balas dengan ROUTER_OK.")
         self._wait_for(session, ('ready',))
         message_count = len(session.channel_id.message_ids)
-        llm_result = {'result': {'role': 'assistant', 'content': [{'type': 'text', 'text': 'second'}], 'provider_metadata': {}}}
+        llm_result = {'result': {'role': 'assistant',
+                                 'content': [{'type': 'text', 'text': 'second'}],
+                                 'provider_metadata': {}}}
         self.env.cr.execute(
             "SELECT request_uuid, request_webhook_secret FROM ai_session WHERE id = %s",
             [session.id],
