@@ -1,5 +1,6 @@
 import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
@@ -12,12 +13,15 @@ _logger = logging.getLogger(__name__)
 
 MAX_WORKERS = 4
 MAX_PENDING = 16
+MAX_DELIVERY_WORKERS = 2
 PROVIDER_TIMEOUT = (5, 60)
 CALLBACK_TIMEOUT = 15
-CALLBACK_ATTEMPTS = 2
+CALLBACK_ATTEMPTS = 3
+CALLBACK_BACKOFF_S = (1.0, 2.0)
 CALLBACK_PATH = '/ai/completion_result_ready'
 
 _executor = ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix='ai_provider_router')
+_delivery_executor = ThreadPoolExecutor(max_workers=MAX_DELIVERY_WORKERS, thread_name_prefix='ai_provider_router_cb')
 _pending = threading.Semaphore(MAX_PENDING)
 
 
@@ -25,7 +29,6 @@ def _new_session():
     session = requests.Session()
     session.trust_env = False
     return session
-
 
 def post_chat_completions(router_config, body, session_ref=None):
     """Perform one provider call and return the decoded JSON body."""
@@ -35,7 +38,7 @@ def post_chat_completions(router_config, body, session_ref=None):
             router_config['endpoint_url'],
             headers=build_headers(router_config, session_ref=session_ref),
             json=body,
-            timeout=PROVIDER_TIMEOUT,
+            timeout=router_config.get('timeout') or PROVIDER_TIMEOUT,
             allow_redirects=False,
         )
     except requests.Timeout:
@@ -51,10 +54,8 @@ def post_chat_completions(router_config, body, session_ref=None):
     except ValueError:
         raise ProviderError('invalid_json') from None
 
-
 def _callback_url():
     return f"http://127.0.0.1:{config['http_port']}{CALLBACK_PATH}"
-
 
 def _signed_callback_payload(request_uuid, webhook_secret, llm_result, llm_error):
     return {
@@ -67,7 +68,6 @@ def _signed_callback_payload(request_uuid, webhook_secret, llm_result, llm_error
             secret=webhook_secret,
         ),
     }
-
 
 def deliver_callback(dbname, request_uuid, webhook_secret, llm_result, llm_error):
     """POST the signed plain-JSON payload to the native completion callback."""
@@ -89,23 +89,27 @@ def deliver_callback(dbname, request_uuid, webhook_secret, llm_result, llm_error
             _logger.warning("AI provider callback for request %s failed (attempt %s)", request_uuid, attempt + 1)
         finally:
             session.close()
+        if attempt < CALLBACK_ATTEMPTS - 1:
+            time.sleep(CALLBACK_BACKOFF_S[min(attempt, len(CALLBACK_BACKOFF_S) - 1)])
+    _logger.error(
+        "AI provider callback for request %s could not be delivered after %s attempts; "
+        "the AI session stays in 'waiting_model' until the user retries — check that the "
+        "Odoo HTTP service is reachable on 127.0.0.1.",
+        request_uuid, CALLBACK_ATTEMPTS,
+    )
     return False
 
-
 def _deliver_failure_async(job):
-    thread = threading.Thread(
-        target=_deliver_failure_safe, args=(job,),
-        name='ai_provider_router_fail', daemon=True,
-    )
-    thread.start()
-
+    try:
+        _delivery_executor.submit(_deliver_failure_safe, job)
+    except Exception:  # noqa: BLE001
+        _logger.exception("AI provider failure callback for request %s could not be scheduled", job['request_uuid'])
 
 def _deliver_failure_safe(job):
     try:
         deliver_callback(job['dbname'], job['request_uuid'], job['webhook_secret'], False, True)
     except Exception:  # noqa: BLE001
         _logger.exception("AI provider failure callback for request %s could not be delivered", job['request_uuid'])
-
 
 def _run_job(job):
     try:
@@ -133,7 +137,6 @@ def _run_job(job):
             _logger.exception("AI provider callback for request %s could not be delivered", job['request_uuid'])
     finally:
         _pending.release()
-
 
 def submit_async_request(job):
     """Enqueue a provider request job; the queue is bounded by a semaphore."""

@@ -1,0 +1,8 @@
+line-length = 120
+
+[lint]
+select = ["E", "F", "W"]
+
+[lint.per-file-ignores]
+# Odoo module convention: side-effect package imports.
+"__init__.py" = ["F401"]

@@ -135,7 +135,8 @@ class TestRequestMapping(TransactionCase):
 
     def test_tools_mapping(self):
         tools = [
-            {'name': 'tool_a', 'instructions': 'does a', 'schema': {'type': 'object', 'properties': {'v': {'type': 'string'}}}},
+            {'name': 'tool_a', 'instructions': 'does a',
+             'schema': {'type': 'object', 'properties': {'v': {'type': 'string'}}}},
             {'name': 'tool_b', 'instructions': '', 'schema': None},
         ]
         body = _body([], tools=tools)
@@ -175,7 +176,8 @@ class TestRequestMapping(TransactionCase):
         stored_meta = {
             'ai_provider_router': dict(PROVIDER_META, reasoning_content='rc', reasoning_details=[{'i': 1}]),
         }
-        messages = [{'role': 'assistant', 'content': [{'type': 'text', 'text': 'second'}], 'provider_metadata': stored_meta}]
+        messages = [{'role': 'assistant', 'content': [{'type': 'text', 'text': 'second'}],
+                     'provider_metadata': stored_meta}]
         body = _body(messages)
         self.assertEqual(body['messages'][1]['reasoning_content'], 'rc')
         self.assertEqual(body['messages'][1]['reasoning_details'], [{'i': 1}])
@@ -188,7 +190,8 @@ class TestRequestMapping(TransactionCase):
                 'reasoning_content': 'rc',
             },
         }
-        messages = [{'role': 'assistant', 'content': [{'type': 'text', 'text': 'second'}], 'provider_metadata': stored_meta}]
+        messages = [{'role': 'assistant', 'content': [{'type': 'text', 'text': 'second'}],
+                     'provider_metadata': stored_meta}]
         body = _body(messages)
         self.assertNotIn('reasoning_content', body['messages'][1])
         self.assertNotIn('reasoning_details', body['messages'][1])
@@ -263,6 +266,7 @@ class TestResponseMapping(TransactionCase):
             self._response(content=None),
             'not a dict',
             self._response(finish='length'),
+            self._response(finish='max_tokens'),
             self._response(finish='content_filter'),
             self._response(content=[{'type': 'weird', 'text': 'x'}]),
         ):
@@ -309,3 +313,23 @@ class TestHeaders(TransactionCase):
         self.assertEqual(headers['x-opencode-session'], 'odoo-ai-7')
         headers = provider.build_headers(config)
         self.assertEqual(headers['x-opencode-session'], 'odoo-ai-default')
+
+    def test_malformed_parts_rejected(self):
+        bad_user_messages = [
+            {'role': 'user', 'content': [{'type': 'text'}]},
+            {'role': 'user', 'content': [{'type': 'tool_result', 'result': []}]},
+            {'role': 'user', 'content': [{'type': 'tool_result', 'tool_call_id': '', 'result': []}]},
+            {'role': 'user', 'content': [{'type': 'tool_result', 'tool_call_id': 'c1', 'result': 'not-a-list'}]},
+        ]
+        for message in bad_user_messages:
+            with self.assertRaises(UserError, msg=str(message)):
+                _body([message])
+        bad_assistant_messages = [
+            {'role': 'assistant', 'content': [{'type': 'text'}]},
+            {'role': 'assistant', 'content': [{'type': 'tool_call', 'name': 'tool_a', 'args': {}}]},
+            {'role': 'assistant', 'content': [{'type': 'tool_call', 'call_id': 'c1', 'args': {}}]},
+            {'role': 'assistant', 'content': [{'type': 'tool_call', 'call_id': 'c1', 'name': 'tool_a', 'args': [1]}]},
+        ]
+        for message in bad_assistant_messages:
+            with self.assertRaises(UserError, msg=str(message)):
+                _body([message])

@@ -20,7 +20,10 @@ class TestAIRouterSettings(TransactionCase):
         })
 
     def _clear_params(self):
-        for key in (provider.PARAM_ENABLED, provider.PARAM_BASE_URL, provider.PARAM_MODEL, provider.PARAM_API_KEY):
+        for key in (
+            provider.PARAM_ENABLED, provider.PARAM_BASE_URL, provider.PARAM_MODEL,
+            provider.PARAM_API_KEY, provider.PARAM_TIMEOUT_S,
+        ):
             self.icp.set_str(key, None)
 
     def setUp(self):
@@ -165,3 +168,53 @@ class TestAIRouterSettings(TransactionCase):
             wizard.with_user(self.user_internal).set_values()
         with self.assertRaises(AccessError):
             wizard.with_user(self.user_internal).ai_router_enabled
+
+    def test_invalid_url_saved_when_disabled(self):
+        self._save(ai_router_base_url='not a url', ai_router_model='unit-test-model')
+        stored = self._stored()
+        self.assertFalse(stored['enabled'])
+        self.assertEqual(stored['base_url'], 'not a url')
+        # enabling with the stored garbage still fails
+        with self.assertRaises((UserError, ValidationError)):
+            self._save(
+                ai_router_enabled=True,
+                ai_router_base_url='not a url',
+                ai_router_model='unit-test-model',
+                ai_router_api_key='dummy-ai-router-test-key',
+            )
+
+    def test_timeout_parameter_clamped(self):
+        self._save(
+            ai_router_enabled=True,
+            ai_router_base_url='http://127.0.0.1:8081/v1',
+            ai_router_model='unit-test-model',
+            ai_router_api_key='dummy-ai-router-test-key',
+        )
+        env = self.env
+
+        def read_timeout(raw):
+            if raw is None:
+                self.icp.set_str(provider.PARAM_TIMEOUT_S, None)
+            else:
+                self.icp.set_str(provider.PARAM_TIMEOUT_S, raw)
+            return provider.get_router_config(env)['timeout'][1]
+
+        self.assertEqual(read_timeout(None), provider.DEFAULT_READ_TIMEOUT_S)
+        self.assertEqual(read_timeout('garbage'), provider.DEFAULT_READ_TIMEOUT_S)
+        self.assertEqual(read_timeout('300'), 300)
+        self.assertEqual(read_timeout('2'), provider.MIN_READ_TIMEOUT_S)
+        self.assertEqual(read_timeout('99999'), provider.MAX_READ_TIMEOUT_S)
+
+    def test_uninstall_hook_clears_params(self):
+        self._save(
+            ai_router_enabled=True,
+            ai_router_base_url='http://127.0.0.1:8081/v1',
+            ai_router_model='unit-test-model',
+            ai_router_api_key='dummy-ai-router-test-key',
+        )
+        from odoo.addons.ai_provider_router.hooks import uninstall_hook
+        uninstall_hook(self.env)
+        self.assertEqual(self._stored(), {
+            'enabled': False, 'base_url': '', 'model': '', 'api_key': '',
+        })
+        self.assertEqual(self.icp.get_str(provider.PARAM_TIMEOUT_S, ''), '')

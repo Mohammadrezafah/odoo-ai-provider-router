@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install ruff
+        run: pip install ruff
+      - name: Ruff
+        run: ruff check .
+      - name: Byte-compile all Python sources
+        run: python -m compileall -q .
+      - name: Validate XML views
+        run: |
+          python - <<'EOF'
+          import glob
+          import xml.dom.minidom
+          for path in glob.glob('**/*.xml', recursive=True):
+              xml.dom.minidom.parse(path)
+              print('OK', path)
+          EOF
+
+  # Requires a self-hosted runner with Odoo 20.0 Enterprise (module `ai`)
+  # available on the path. See README "Testing".
+  integration:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, odoo20-enterprise]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Odoo test suite
+        run: |
+          odoo-bin -d "$ODOO_TEST_DB" \
+            -i ai_provider_router \
+            --test-tags /ai_provider_router \
+            --stop-after-init --max-cron-threads=0
+        env:
+          ODOO_TEST_DB: ai_provider_router_ci
